@@ -1,0 +1,695 @@
+
+=== app.py ===
+""" 
+本文件是【部署一个鲜花网络电商的人脉工具（下）】章节的配套代码，课程链接：https://juejin.cn/book/7387702347436130304/section/7388070997553119282
+您可以点击最上方的“运行“按钮，直接运行该文件；更多操作指引请参考Readme.md文件。
+"""
+# 导入所需的库和模块
+from flask import Flask, render_template, request, jsonify
+from findbigV import find_bigV
+import json
+
+# 实例化Flask应用
+app = Flask(__name__)
+
+
+# 主页路由，返回index.html模板
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+# 处理请求的路由，仅允许POST请求
+@app.route("/process", methods=["POST"])
+def process():
+    # 获取提交的花的名称
+    flower = request.form["flower"]
+    # 使用find_bigV函数获取相关数据
+    response_str = find_bigV(flower=flower)
+    # 使用json.loads将字符串解析为字典
+    response = json.loads(response_str)
+
+    # 返回数据的json响应
+    return jsonify(
+        {
+            "summary": response["summary"],
+            "facts": response["facts"],
+            "interest": response["interest"],
+            "letter": response["letter"],
+        }
+    )
+
+
+# 判断是否是主程序运行，并设置Flask应用的host和debug模式
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", debug=True)
+
+
+=== findbigV.py ===
+""" 
+本文件是【部署一个鲜花网络电商的人脉工具（下）】章节的配套代码，课程链接：https://juejin.cn/book/7387702347436130304/section/7388070997553119282
+您可以点击最上方的“运行“按钮，直接运行该文件；更多操作指引请参考Readme.md文件。
+"""
+# 设置OpenAI API密钥
+
+# 导入所取的库
+import re
+from agents.weibo_agent import lookup_V
+from tools.general_tool import remove_non_chinese_fields
+from tools.scraping_tool import get_data
+from tools.textgen_tool import generate_letter
+import os
+
+os.environ["SERPAPI_API_KEY"] = (
+   "00bee1e074c3e41e4fb6c432dc0a05d7988fdc91727363d7f3a23657a81c4638"
+)
+os.environ["ZHIPUAI_API_KEY"] = "c5fb87a5e747c34bf5164f952c7f896d.KUs6sw8d8FxyJ7p5"
+
+def find_bigV(flower: str):
+    # 拿到UID
+    response_UID = lookup_V(flower_type=flower)
+
+    # 抽取UID里面的数字
+    UID = re.findall(r"\d+", response_UID)[0]
+    print("这位鲜花大V的微博ID是", UID)
+
+    # 根据UID爬取大V信息
+    person_info = get_data(UID)
+    print(person_info)
+
+    # 移除无用的信息
+    remove_non_chinese_fields(person_info)
+    print(person_info)
+
+    # 调用函数根据大V信息生成文本
+    result = generate_letter(information=person_info)
+    print(result)
+
+    return result
+
+
+if __name__ == "__main__":
+
+    # 拿到UID
+    response_UID = lookup_V(flower_type="牡丹")
+
+    # 抽取UID里面的数字
+    UID = re.findall(r"\d+", response_UID)[0]
+    print("这位鲜花大V的微博ID是", UID)
+
+    # 根据UID爬取大V信息
+    person_info = get_data(UID)
+    print(person_info)
+
+    # 移除无用的信息
+    remove_non_chinese_fields(person_info)
+    print(person_info)
+
+    result = generate_letter(information=person_info)
+    print(result)
+
+    from flask import jsonify
+    import json
+
+    # 使用json.loads将字符串解析为字典
+    result = json.loads(result)
+    abc = jsonify(
+        {
+            "summary": result["summary"],
+            "facts": result["facts"],
+            "interest": result["interest"],
+            "letter": result["letter"],
+        }
+    )
+
+
+=== __init__.py ===
+
+
+=== agents\weibo_agent.py ===
+from langchain_community.chat_models import ChatZhipuAI
+from langchain.prompts import PromptTemplate
+from langchain.agents import Tool, AgentExecutor, create_react_agent
+from tools.search_tool import get_UID
+import os
+
+# 设置智谱AI API密钥
+
+
+def lookup_V(flower_type: str):
+    llm = ChatZhipuAI(
+        model_name="glm-4-plus",
+        temperature=0.7,
+        # 也可以直接在这里设置API密钥
+        zhipuai_api_key="c5fb87a5e747c34bf5164f952c7f896d.KUs6sw8d8FxyJ7p5" # 替换为你的实际API密钥
+    )
+
+    template = """按照以下步骤查找与 {input} 相关的微博用户ID：
+
+可用工具:
+{tools}
+可用工具名称: {tool_names}
+
+使用以下格式:
+Thought: 你的思考过程
+Action: 要使用的工具名称
+Action Input: 工具的输入
+Observation: 工具的输出
+... (这个思考/行动/观察可以重复多次)
+Thought: 我现在知道最终答案
+Final Answer: 用户ID（纯数字）
+
+开始查找:
+{agent_scratchpad}"""
+
+    tools = [
+        Tool(
+            name="Search Weibo User",
+            func=get_UID,
+            description="用于搜索微博用户，输入关键词，返回相关用户ID"
+        )
+    ]
+
+    prompt = PromptTemplate(
+        template=template,
+        input_variables=["input", "tools", "tool_names", "agent_scratchpad"]
+    )
+
+    agent = create_react_agent(
+        llm=llm,
+        tools=tools,
+        prompt=prompt
+    )
+
+    agent_executor = AgentExecutor.from_agent_and_tools(
+        agent=agent,
+        tools=tools,
+        handle_parsing_errors=True,
+        verbose=True
+    )
+
+    try:
+        result = agent_executor.invoke({"input": flower_type})
+        import re
+        if result and isinstance(result, dict) and "output" in result:
+            ids = re.findall(r'\d+', str(result["output"]))
+            if ids:
+                return ids[0]
+        raise ValueError("未找到有效的用户ID")
+    except Exception as e:
+        print(f"搜索出错: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    print(lookup_V("月季"))
+
+=== agents\__init__.py ===
+
+
+=== static\css\style.css ===
+/* static/css/style.css */
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f5f5f5;
+    color: #333;
+    line-height: 1.6;
+}
+
+.container {
+    width: 80%;
+    margin: 0 auto;
+    padding: 30px;
+    background-color: #ffffff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border-radius: 5px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+h1 {
+    font-size: 32px;
+    margin-bottom: 20px;
+}
+
+input[type="text"] {
+    width: 100%;
+    padding: 12px 20px;
+    margin: 8px 0;
+    box-sizing: border-box;
+    border: 2px solid #ccc;
+    border-radius: 4px;
+    background-color: #f8f8f8;
+    font-size: 14px;
+}
+
+button {
+    background-color: #4caf50;
+    border: none;
+    color: white;
+    padding: 15px 32px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 16px;
+    margin: 4px 2px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: 0.3s;
+}
+
+button:hover {
+    background-color: #45a049;
+}
+
+#result {
+    margin-top: 30px;
+    width: 100%;
+    text-align: center;
+}
+
+
+#loading {
+  display: none;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 999;
+  background-color: rgba(255, 255, 255, 0.8);
+}
+
+.loader {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border: 8px solid #f3f3f3;
+  border-top: 8px solid #3498db;
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  animation: spin 2s linear infinite;
+}
+
+p {
+    font-size: 18px;
+    margin-bottom: 10px;
+}
+
+h2 {
+    font-size: 24px;
+    margin-bottom: 10px;
+    margin-top: 20px;
+}
+
+
+/* style.css */
+
+/* Add or update this in your style.css file */
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f5f5f5;
+    color: #333;
+    line-height: 1.6;
+    background-image: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+}
+
+.spinner-container {
+    position: fixed;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 999;
+}
+
+#loading-spinner {
+    font-size: 48px;
+}
+
+button {
+    background-color: #4caf50;
+    background-image: linear-gradient(135deg, #43c6ac 0%, #191654 100%);
+    border: none;
+    color: white;
+    padding: 15px 32px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 16px;
+    margin: 4px 2px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: 0.3s;
+}
+
+ul {
+    list-style-type: none;
+}
+
+=== templates\index.html ===
+<!-- templates/index.html -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://lf3-static.bytednsdoc.com/obj/eden-cn/veh7vhpeps/jquery-3.6.0.min.js?x-resource-account=public"></script>
+    <title>人脉工具</title>
+    <link rel="stylesheet" href="https://lf3-static.bytednsdoc.com/obj/eden-cn/veh7vhpeps/all.min.css?x-resource-account=public" />
+    <div class="spinner-container" id="spinner-container" style="display: none;">
+        <i id="loading-spinner" class="fas fa-spinner fa-spin"></i>
+    </div>
+</head>
+<body>
+    <div class="container">
+        <h1>易速鲜花人脉工具</h1>
+        <form id="name-form">
+            <input type="text" id="flower" name="flower" placeholder="输入一种花（或者其它东西也行）">
+            <button id="magic-button" type="submit">找到大V</button>
+        </form>
+        <div id="result">
+            <img id="profile-pic" src="" alt="Profile Picture" style="display: none; max-width: 100%; height: auto; border-radius: 50%; margin-bottom: 20px;">
+            <h2>基本情况</h2>
+            <p id="summary"></p>
+            <h2>特色内容</h2>
+            <div id="facts"></div>
+            <h2>可能感兴趣的事儿</h2>
+            <div id="interest"></div>
+            <h2>联络邮件</h2>
+            <div id="letter"></div>
+        </div>
+    </div>
+    <script>
+        $(document).ready(function () {
+            $('#name-form').on('submit', function (e) {
+                e.preventDefault();
+                $('#spinner-container').show();
+                $.ajax({
+                    url: '/process',
+                    data: $('#name-form').serialize(),
+                    type: 'POST',
+                    success: function (response) {
+                        $('#profile-pic').attr('src', 'https://media.licdn.com/dms/image/C5603AQFNBlle-yAc5g/profile-displayphoto-shrink_800_800/0/1517403045625?e=1702512000&v=beta&t=klKCelFxssjEw0Y1_3bmzP9YLy8yGijKz9_P16lGy5w'); 
+                        $('#profile-pic').show(); 
+                        $('#summary').text(response.summary);
+                        $('#facts').html('<ul>' + response.facts.map(fact => '<li>' + fact + '</li>').join('') + '</ul>');
+                        $('#interest').html('<ul>' + response.interest.map(interest => '<li>' + interest + '</li>').join('') + '</ul>');
+                        $('#letter').text(response.letter);
+                    },
+                    error: function (error) {
+                        console.log(error);
+                    },
+                    complete: function () {
+                        $('#spinner-container').hide();
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
+
+
+=== tools\general_tool.py ===
+import re
+
+def contains_chinese(s):
+    return bool(re.search("[\u4e00-\u9fa5]", s))
+
+def remove_non_chinese_fields(d):
+    if isinstance(d, dict):
+        to_remove = [
+            key
+            for key, value in d.items()
+            if isinstance(value, (str, int, float, bool))
+            and (not contains_chinese(str(value)))
+        ]
+        for key in to_remove:
+            del d[key]
+
+        for key, value in d.items():
+            if isinstance(value, (dict, list)):
+                remove_non_chinese_fields(value)
+    elif isinstance(d, list):
+        to_remove_indices = []
+        for i, item in enumerate(d):
+            if isinstance(item, (str, int, float, bool)) and (
+                not contains_chinese(str(item))
+            ):
+                to_remove_indices.append(i)
+            else:
+                remove_non_chinese_fields(item)
+
+        for index in reversed(to_remove_indices):
+            d.pop(index)
+
+
+=== tools\parsing_tool.py ===
+# 导入所需的类
+from langchain.output_parsers import PydanticOutputParser
+from pydantic import BaseModel, Field
+from typing import List
+
+
+# 定义一个名为TextParsing的模型，描述了如何解析大V信息
+class TextParsing(BaseModel):
+    summary: str = Field(description="大V个人简介")  # 大V的简介或背景信息
+    facts: List[str] = Field(description="大V的特点")  # 大V的一些显著特点或者事实
+    interest: List[str] = Field(
+        description="这个大V可能感兴趣的事情"
+    )  # 大V可能感兴趣的主题或活动
+    letter: List[str] = Field(
+        description="一篇联络这个大V的邮件"
+    )  # 联络大V的建议邮件内容
+
+    # 将模型对象转换为字典
+    def to_dict(self):
+        return {
+            "summary": self.summary,
+            "facts": self.facts,
+            "interest": self.interest,
+            "letter": self.letter,
+        }
+
+
+# 创建一个基于Pydantic模型的解析器，用于将文本输出解析为特定的结构
+letter_parser: PydanticOutputParser = PydanticOutputParser(pydantic_object=TextParsing)
+
+
+=== tools\scraping_tool.py ===
+import requests
+import time
+
+def get_data(uid: str):
+    """爬取微博用户信息"""
+    base_url = f"https://m.weibo.cn/api/container/getIndex"
+    params = {
+        "type": "uid",
+        "value": uid,
+        "containerid": f"100505{uid}"
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36",
+        "Referer": "https://m.weibo.cn/",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    try:
+        response = requests.get(base_url, params=params, headers=headers)
+        time.sleep(3)  # 延时3秒防止被反爬
+        return response.json()
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        return None
+
+if __name__ == "__main__":
+    user_id = "1749127163"
+    user_data = get_data(user_id)
+    print(user_data)
+
+=== tools\search_tool.py ===
+import requests
+import re
+from typing import List
+from urllib.parse import quote
+
+
+def get_UID(flower: str) -> List[str]:
+    """
+    通过微博搜索找到相关用户ID
+    Args:
+        flower: 搜索关键词
+    Returns:
+        List[str]: 用户ID列表
+    """
+    print(f"\n正在搜索: {flower}")
+
+    # 构建微博搜索URL
+    search_query = quote(f"{flower}")
+    url = f"https://s.weibo.com/weibo?q={search_query}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Cookie": "_T_WM=81690208603; WEIBOCN_FROM=1110006030; SCF=AhzBArlqGU8zAaBoL3kTlFtgfZTT11UOZAUrWnwQ8VRWoZpCa2-5iR8vSzX7nSjb37qBo6HpZCfqTDoCOyDhm60.; SUB=_2A25KPx3tDeRhGeFJ71oR8inNzz-IHXVpNR8lrDV6PUJbktAGLXP7kW1Nf9NFdlXOrJwJufPIvE6vrzwjiZSPo4Ml; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9Wh4Dk_ZJJokZV0CD4CLqGWP5NHD95QNS0BRehzNeKB0Ws4DqcjMi--NiK.Xi-2Ri--ciKnRi-zNS0MX1h5ES02Xe7tt; SSOLoginState=1731947965; ALF=1734539965; MLOGIN=1; XSRF-TOKEN=6635c4; M_WEIBOCN_PARAMS=lfid%3D102803%26luicode%3D20000174%26uicode%3D10000011%26fid%3D231051_-_fans_-_6177367279",
+        "Referer": "https://s.weibo.com/"
+    }
+
+    try:
+        # 发送请求
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = 'utf-8'
+        content = response.text
+
+        # 匹配用户主页链接
+        uid_patterns = [
+            r'href="//weibo\.com/u/(\d+)"',
+            r'href="//weibo\.com/(\d+)(?:/)?[^"]*"',
+            r'uid=(\d+)',
+            r'm\.weibo\.cn/u/(\d+)'
+        ]
+
+        all_uids = set()
+        for pattern in uid_patterns:
+            uids = re.findall(pattern, content)
+            all_uids.update(uids)
+
+        if all_uids:
+            print(f"找到的微博用户ID: {list(all_uids)}")
+            return list(all_uids)[:3]  # 返回前3个结果
+
+        print("未找到微博用户ID")
+        return []
+
+    except Exception as e:
+        print(f"搜索出错: {str(e)}")
+        return []
+
+
+def search_with_multiple_terms(keyword: str) -> List[str]:
+    """使用多个搜索词组合来查找"""
+    search_terms = [
+        f"{keyword}",
+        f"{keyword} 博主",
+        f"{keyword} 达人",
+        f"{keyword} 种植",
+        f"{keyword} 园艺"
+    ]
+
+    all_results = set()
+    for term in search_terms:
+        try:
+            results = get_UID(term)
+            all_results.update(results)
+            if len(all_results) >= 3:  # 找到3个结果就停止
+                break
+        except Exception as e:
+            print(f"搜索词 {term} 失败: {e}")
+            continue
+
+    return list(all_results)[:3]
+
+
+if __name__ == "__main__":
+    test_queries = [
+        "天狼月季",
+        "月季花艺",
+        "月季达人",
+        "玫瑰花艺",
+        "牡丹"
+    ]
+
+    print("开始测试搜索结果...\n")
+
+    for query in test_queries:
+        print(f"\n=== 测试搜索词: {query} ===")
+        try:
+            results = search_with_multiple_terms(query)
+            print(f"最终找到的UID列表: {results}")
+        except Exception as e:
+            print(f"搜索失败: {str(e)}")
+
+    print("\n测试完成")
+
+=== tools\textgen_tool.py ===
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain_community.chat_models import ChatZhipuAI
+import json
+import re
+
+
+def generate_letter(information):
+    # 获取头像URL
+    avatar_url = information['data']['userInfo']['avatar_hd']
+
+    letter_template = """
+    分析以下微博用户信息并生成分析报告：
+    {information}
+
+    严格按照以下JSON格式输出，不要添加任何markdown标记：
+    {{
+        "summary": "单行文本描述",
+        "facts": ["特点1", "特点2"],
+        "interest": ["兴趣1", "兴趣2", "兴趣3"],
+        "letter": "完整的推荐信文本",
+        "avatar_url": "{avatar_url}"
+    }}
+    """
+
+    prompt = PromptTemplate(
+        input_variables=["information", "avatar_url"],
+        template=letter_template
+    )
+
+    llm = ChatZhipuAI(
+        model_name='glm-4-plus',
+        temperature=0.7
+    )
+
+    chain = LLMChain(llm=llm, prompt=prompt)
+
+    try:
+        result = chain.run(information=information, avatar_url=avatar_url)
+        result = result.replace('```json', '').replace('```', '').strip()
+
+        # 解析结果
+        parsed_result = json.loads(result)
+
+        # 确保包含头像URL
+        if 'avatar_url' not in parsed_result or not parsed_result['avatar_url']:
+            parsed_result['avatar_url'] = avatar_url
+
+        return json.dumps(parsed_result, ensure_ascii=False)
+
+    except Exception as e:
+        print(f"处理出错: {str(e)}")
+
+        # 构造一个包含头像的基础响应
+        fallback = {
+            "summary": "微博用户分析",
+            "facts": ["有微博账号"],
+            "interest": ["社交媒体"],
+            "letter": "尊敬的用户，您好！",
+            "avatar_url": avatar_url  # 确保始终包含头像
+        }
+        return json.dumps(fallback, ensure_ascii=False)
+
+=== tools\__init__.py ===
+
